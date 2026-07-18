@@ -30,6 +30,7 @@ var (
 	appendMenuW           = user32.NewProc("AppendMenuW")
 	trackPopupMenu        = user32.NewProc("TrackPopupMenu")
 	setForegroundWindow   = user32.NewProc("SetForegroundWindow")
+	getCursorPos          = user32.NewProc("GetCursorPos")
 	postMessageW          = user32.NewProc("PostMessageW")
 	destroyMenu           = user32.NewProc("DestroyMenu")
 )
@@ -89,6 +90,8 @@ type NOTIFYICONDATAW struct {
 	GuidItem         [16]byte
 	HBalloonIcon     uintptr
 }
+
+type POINT struct{ X, Y int32 }
 
 type Tray struct {
 	hwnd       uintptr
@@ -171,7 +174,7 @@ func (t *Tray) Run() {
 		UCallbackMessage: WM_APP + 1,
 	}
 	tnid.CbSize = uint32(unsafe.Sizeof(tnid))
-	tnid.HIcon, _, _ = loadIconW.Call(hInstance, IDI_APPLICATION)
+	tnid.HIcon, _, _ = loadIconW.Call(0, IDI_APPLICATION)
 	tipStr := "Daljinac2 Agent"
 	for i, c := range tipStr {
 		if i < 127 {
@@ -270,7 +273,9 @@ func (t *Tray) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr
 			exitPtr, _ := syscall.UTF16PtrFromString("Exit")
 			appendMenuW.Call(menu, MF_STRING, 206, uintptr(unsafe.Pointer(exitPtr)))
 
-			trackPopupMenu.Call(menu, 0, 0, 0, 0, hwnd, 0)
+			var pt POINT
+			getCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+			trackPopupMenu.Call(menu, 0, uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 			destroyMenu.Call(menu)
 		}
 		return 0
