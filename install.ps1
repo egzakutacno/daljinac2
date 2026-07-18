@@ -32,8 +32,8 @@ try {
 
     Write-Host "[2/3] Installing scheduled task..."
     Remove-Item C:\daljinac2\watchdog.vbs -Force -ErrorAction SilentlyContinue
-    schtasks /delete /tn Daljinac2 /f 2>$null
-    schtasks /delete /tn Daljinac2Watch /f 2>$null
+    try { schtasks /delete /tn Daljinac2 /f 2>$null } catch {}
+    try { schtasks /delete /tn Daljinac2Watch /f 2>$null } catch {}
 
     Write-Host "       Creating Daljinac2 ONLOGON task..."
     $taskCmd = "$Exe"
