@@ -17,6 +17,8 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/windows/registry"
+
 	"github.com/egzakutacno/daljinac2/internal/auth"
 	"github.com/egzakutacno/daljinac2/internal/tunnel"
 	daljinacmcp "github.com/egzakutacno/daljinac2/internal/mcp"
@@ -48,6 +50,7 @@ func initLog() {
 	log.SetOutput(f)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.Printf("=== daljinac2 v%s starting ===", version)
+	syncLog()
 }
 
 func syncLog() {
@@ -76,6 +79,21 @@ func writeStartupMarker() {
 	os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0644)
 }
 
+func logExec(cmdName string, args ...string) error {
+	cmd := exec.Command(cmdName, args...)
+	out, err := cmd.CombinedOutput()
+	outStr := strings.TrimSpace(string(out))
+	if err != nil {
+		log.Printf("[exec] FAILED: %s %v | output: %s | err: %v", cmdName, args, outStr, err)
+	} else if outStr != "" {
+		log.Printf("[exec] OK: %s %v | output: %s", cmdName, args, outStr)
+	} else {
+		log.Printf("[exec] OK: %s %v", cmdName, args)
+	}
+	syncLog()
+	return err
+}
+
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -97,16 +115,23 @@ func main() {
 	args := flag.Args()
 	if len(args) > 0 && args[0] == "-install" {
 		doInstall()
+		syncLog()
 		return
 	}
 	if len(args) > 0 && args[0] == "-remove" {
 		doRemove()
+		syncLog()
 		return
 	}
 
+	log.Printf("=== daljinac2 v%s process start ===", version)
+	log.Printf("Args: %v", os.Args)
+	syncLog()
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
-		log.Printf("Port %d in use — another instance running. Exiting.", *port)
+		log.Printf("Port %d in use - another instance running. Exiting.", *port)
+		syncLog()
 		return
 	}
 	ln.Close()
@@ -114,14 +139,13 @@ func main() {
 	shutdown := make(chan struct{})
 	hostname, _ := os.Hostname()
 	log.Printf("Hostname: %s, Version: %s, Port: %d, Tray: %v", hostname, version, *port, !*noTray)
+	syncLog()
 
 	// Create MCP server
 	mcpServer := daljinacmcp.NewDMCPServer(version)
 	httpHandler := daljinacmcp.NewStreamableHTTPServer(mcpServer, "/mcp")
-	// Wrap with auth
 	authHandler := auth.Middleware(httpHandler)
 
-	// Setup direct HTTP access too (for tunnel health checks)
 	directMux := http.NewServeMux()
 	directMux.Handle("/mcp", authHandler)
 	directMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -139,10 +163,14 @@ func main() {
 		log.Println("[main] restarting tunnel not supported yet")
 	}
 	tr.OnExit = func() {
+		log.Println("[main] OnExit triggered - shutting down")
+		syncLog()
 		close(shutdown)
 	}
 
 	onConnect := func(url string) {
+		log.Printf("[main] tunnel connected: %s", url)
+		syncLog()
 		tr.SetURL(url)
 		tr.SetRunning()
 		tr.SetStatusIcon(tray.IconConnected)
@@ -154,28 +182,42 @@ func main() {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[tray] PANIC: %v", r)
+					syncLog()
 				}
 			}()
 			log.Println("[main] starting tray goroutine")
+			syncLog()
 			tr.Run()
+			log.Println("[main] tray goroutine exited")
+			syncLog()
 		}()
 	} else {
 		log.Println("Headless mode")
+		syncLog()
 	}
 
 	// Start MCP HTTP server
 	go func() {
-		defer func() { recover() }()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[http] PANIC: %v", r)
+				syncLog()
+			}
+		}()
 		addr := fmt.Sprintf(":%d", *port)
 		log.Printf("Starting MCP Streamable HTTP server on %s", addr)
+		syncLog()
 		if err := http.ListenAndServe(addr, directMux); err != nil {
-			log.Printf("HTTP error: %v", err)
+			log.Printf("[http] server error: %v", err)
+			syncLog()
 		}
 	}()
 
 	// Start SSH tunnel
 	t := tunnel.NewSSH(*port, hostname, onConnect)
 	t.Start()
+	log.Println("[main] SSH tunnel started")
+	syncLog()
 
 	// Watchdog: exit if tunnel not connected for 30 minutes
 	go func() {
@@ -185,8 +227,9 @@ func main() {
 				continue
 			}
 			since := time.Since(t.LastConnected())
+			log.Printf("[watchdog] check: last connected %v ago", since)
 			if since > 30*time.Minute {
-				log.Printf("[watchdog] tunnel not connected for %v, exiting", since)
+				log.Printf("[watchdog] tunnel not connected for %v, exiting (task will restart)", since)
 				syncLog()
 				os.Exit(1)
 			}
@@ -202,35 +245,101 @@ func main() {
 
 	select {
 	case <-shutdown:
-	case <-sig:
+		log.Println("[main] shutdown via OnExit")
+	case s := <-sig:
+		log.Printf("[main] shutdown via signal: %v", s)
 	}
+	syncLog()
 
-	log.Println("Shutdown")
+	log.Println("[main] cleaning up...")
+	syncLog()
 	if t != nil {
 		t.Stop()
 	}
 	tr.Stop()
+	log.Println("[main] done")
+	syncLog()
 }
 
 func doInstall() {
-	exe, _ := os.Executable()
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("[install] os.Executable failed: %v", err)
+		return
+	}
+	log.Printf("[install] binary: %s", exe)
+
 	os.MkdirAll("C:\\daljinac2", 0755)
+
+	// Write watchdog VBS
 	vbs := "CreateObject(\"WScript.Shell\").Run \"schtasks /run /tn Daljinac2\", 0, False\n"
-	os.WriteFile("C:\\daljinac2\\watchdog.vbs", []byte(vbs), 0644)
-	exec.Command("schtasks", "/delete", "/tn", "Daljinac2", "/f").Run()
-	exec.Command("schtasks", "/delete", "/tn", "Daljinac2Watch", "/f").Run()
-	exec.Command("schtasks", "/create", "/tn", "Daljinac2", "/tr", exe, "/sc", "ONLOGON", "/rl", "HIGHEST", "/f").Run()
-	exec.Command("schtasks", "/create", "/tn", "Daljinac2Watch", "/tr", "wscript.exe //B C:\\daljinac2\\watchdog.vbs", "/sc", "MINUTE", "/mo", "5", "/f").Run()
-	exec.Command("cmd", "/c", "start", "", "/min", exe).Run()
-	log.Println("Installed (scheduled task + watchdog)")
+	if err := os.WriteFile("C:\\daljinac2\\watchdog.vbs", []byte(vbs), 0644); err != nil {
+		log.Printf("[install] write watchdog.vbs failed: %v", err)
+	} else {
+		log.Println("[install] watchdog.vbs written")
+	}
+
+	// Remove old tasks first
+	logExec("schtasks", "/delete", "/tn", "Daljinac2", "/f")
+	logExec("schtasks", "/delete", "/tn", "Daljinac2Watch", "/f")
+
+	// Create main task with /it (Interactive) flag so tray works
+	if err := logExec("schtasks", "/create", "/tn", "Daljinac2", "/tr", exe,
+		"/sc", "ONLOGON", "/it", "/rl", "HIGHEST", "/f"); err != nil {
+		log.Printf("[install] FAILED to create Daljinac2 task: %v", err)
+	} else {
+		log.Println("[install] Daljinac2 task created")
+	}
+
+	// Create watchdog task
+	if err := logExec("schtasks", "/create", "/tn", "Daljinac2Watch",
+		"/tr", "wscript.exe //B C:\\daljinac2\\watchdog.vbs",
+		"/sc", "MINUTE", "/mo", "5", "/f"); err != nil {
+		log.Printf("[install] FAILED to create Daljinac2Watch task: %v", err)
+	} else {
+		log.Println("[install] Daljinac2Watch task created")
+	}
+
+	// Add Run registry key as fallback
+	if k, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Windows\CurrentVersion\Run`,
+		registry.SET_VALUE); err == nil {
+		if err := k.SetStringValue("Daljinac2", `"`+exe+`"`); err != nil {
+			log.Printf("[install] registry Run key set failed: %v", err)
+		} else {
+			log.Println("[install] Run registry key set")
+		}
+		k.Close()
+	} else {
+		log.Printf("[install] cannot open Run registry key: %v", err)
+	}
+
+	syncLog()
+
+	// Start the app
+	if err := logExec("cmd", "/c", "start", "", "/min", exe); err != nil {
+		log.Printf("[install] start app failed: %v", err)
+	} else {
+		log.Println("[install] app started")
+	}
+	syncLog()
 }
 
 func doRemove() {
-	exec.Command("taskkill", "/f", "/im", "daljinac2.exe").Run()
-	exec.Command("schtasks", "/delete", "/tn", "Daljinac2", "/f").Run()
-	exec.Command("schtasks", "/delete", "/tn", "Daljinac2Watch", "/f").Run()
+	logExec("taskkill", "/f", "/im", "daljinac2.exe")
+	logExec("schtasks", "/delete", "/tn", "Daljinac2", "/f")
+	logExec("schtasks", "/delete", "/tn", "Daljinac2Watch", "/f")
+
+	if k, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Windows\CurrentVersion\Run`,
+		registry.SET_VALUE); err == nil {
+		k.DeleteValue("Daljinac2")
+		k.Close()
+	}
+
 	os.Remove("C:\\daljinac2\\watchdog.vbs")
-	log.Println("Removed")
+	log.Println("[remove] done")
+	syncLog()
 }
 
 func updateURL() string {
@@ -244,7 +353,7 @@ func doUpdate() error {
 
 	dlURL := updateURL()
 	newExe := filepath.Join(tmpDir, filepath.Base(os.Args[0]))
-	log.Printf("Downloading %s", dlURL)
+	log.Printf("[update] downloading %s", dlURL)
 	resp, err := http.Get(dlURL)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
@@ -308,7 +417,8 @@ del "%%~f0"
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("/C \""+bat+"\""))),
 		0, 0)
 
-	log.Println("Update launched, exiting")
+	log.Println("[update] launched, exiting")
+	syncLog()
 	os.Exit(0)
 	return nil
 }
