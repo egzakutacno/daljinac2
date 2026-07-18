@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"fmt"
 	"log"
 	"runtime"
 	"sync"
@@ -38,8 +39,11 @@ var (
 const (
 	WM_DESTROY          = 2
 	WM_COMMAND          = 0x0111
+	WM_CONTEXTMENU      = 0x007B
+	WM_NULL             = 0
 	WM_APP              = 0x8000
 	NIM_ADD             = 0
+	NIM_MODIFY          = 1
 	NIM_DELETE          = 2
 	NIM_SETVERSION      = 4
 	NIF_MESSAGE         = 1
@@ -48,6 +52,8 @@ const (
 	NOTIFYICON_VERSION_4 = 4
 	MF_STRING     = 0
 	MF_SEPARATOR  = 0x0800
+	TPM_RIGHTBUTTON = 0x0002
+	TPM_BOTTOMALIGN = 0x0020
 	IDI_APPLICATION = 32512
 	IDC_ARROW       = 32512
 )
@@ -167,28 +173,24 @@ func (t *Tray) Run() {
 	}
 	t.hwnd = hwnd
 
-	tnid := NOTIFYICONDATAW{
+	t.nid = NOTIFYICONDATAW{
 		HWnd:             hwnd,
-		UID:              100,
+		UID:              1,
 		UFlags:           NIF_MESSAGE | NIF_ICON | NIF_TIP,
 		UCallbackMessage: WM_APP + 1,
 	}
-	tnid.CbSize = uint32(unsafe.Sizeof(tnid))
-	tnid.HIcon, _, _ = loadIconW.Call(0, IDI_APPLICATION)
-	tipStr := "Daljinac2 Agent"
-	for i, c := range tipStr {
-		if i < 127 {
-			tnid.SzTip[i] = uint16(c)
-		}
-	}
-	t.nid = tnid
+	t.nid.CbSize = 568 // NOTIFYICONDATAW_V2_SIZE on x64
+	t.nid.HIcon, _, _ = loadIconW.Call(0, IDI_APPLICATION)
+	tipStr := fmt.Sprintf("Daljinac2 v%s — %s", t.version, t.hostname)
+	copy(t.nid.SzTip[:], syscall.StringToUTF16(tipStr))
 
 	add, _, _ := shellNotifyIconW.Call(NIM_ADD, uintptr(unsafe.Pointer(&t.nid)))
-	if add == 0 {
-		log.Printf("[tray] NIM_ADD failed")
-		return
+	if add != 0 {
+		t.iconAdded = true
+		t.nid.UVersion = NOTIFYICON_VERSION_4
+		shellNotifyIconW.Call(NIM_SETVERSION, uintptr(unsafe.Pointer(&t.nid)))
+		log.Printf("[tray] icon added OK (cbSize=%d)", t.nid.CbSize)
 	}
-	t.iconAdded = true
 
 	var msg struct {
 		HWnd    uintptr
@@ -239,47 +241,46 @@ func (t *Tray) RemoveIcon() {
 	}
 }
 
+func (t *Tray) showMenu() {
+	setForegroundWindow.Call(t.hwnd)
+	menu, _, _ := createPopupMenu.Call()
+
+	title := fmt.Sprintf("Daljinac2 v%s — %s", t.version, t.hostname)
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	appendMenuW.Call(menu, MF_STRING, 200, uintptr(unsafe.Pointer(titlePtr)))
+	appendMenuW.Call(menu, MF_SEPARATOR, 201, 0)
+
+	t.mu.RLock()
+	u := t.url
+	t.mu.RUnlock()
+
+	if u != "" {
+		urlLabel := "URL: " + u
+		urlPtr, _ := syscall.UTF16PtrFromString(urlLabel)
+		appendMenuW.Call(menu, MF_STRING, 202, uintptr(unsafe.Pointer(urlPtr)))
+		appendMenuW.Call(menu, MF_SEPARATOR, 203, 0)
+	}
+
+	resetPtr, _ := syscall.UTF16PtrFromString("Restart Tunnel")
+	appendMenuW.Call(menu, MF_STRING, 204, uintptr(unsafe.Pointer(resetPtr)))
+	updatePtr, _ := syscall.UTF16PtrFromString("Check for Updates...")
+	appendMenuW.Call(menu, MF_STRING, 205, uintptr(unsafe.Pointer(updatePtr)))
+	exitPtr, _ := syscall.UTF16PtrFromString("Exit")
+	appendMenuW.Call(menu, MF_STRING, 206, uintptr(unsafe.Pointer(exitPtr)))
+
+	var pt POINT
+	getCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	setForegroundWindow.Call(t.hwnd)
+	trackPopupMenu.Call(menu, 0, uintptr(pt.X), uintptr(pt.Y), 0, t.hwnd, 0)
+	postMessageW.Call(t.hwnd, uintptr(WM_NULL), 0, 0)
+	destroyMenu.Call(menu)
+}
+
 func (t *Tray) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
-	case WM_APP + 1:
-		if lParam == 0x0205 {
-			setForegroundWindow.Call(hwnd)
-			menu, _, _ := createPopupMenu.Call()
-
-			title := "Daljinac2 - " + t.hostname
-			titlePtr, _ := syscall.UTF16PtrFromString(title)
-			appendMenuW.Call(menu, MF_STRING, 200, uintptr(unsafe.Pointer(titlePtr)))
-
-			appendMenuW.Call(menu, MF_SEPARATOR, 201, 0)
-
-			t.mu.RLock()
-			u := t.url
-			t.mu.RUnlock()
-
-			if u != "" {
-				urlLabel := "URL: " + u
-				urlPtr, _ := syscall.UTF16PtrFromString(urlLabel)
-				appendMenuW.Call(menu, MF_STRING, 202, uintptr(unsafe.Pointer(urlPtr)))
-			}
-
-			appendMenuW.Call(menu, MF_SEPARATOR, 203, 0)
-
-			resetPtr, _ := syscall.UTF16PtrFromString("Restart Tunnel")
-			appendMenuW.Call(menu, MF_STRING, 204, uintptr(unsafe.Pointer(resetPtr)))
-
-			updatePtr, _ := syscall.UTF16PtrFromString("Check for Updates...")
-			appendMenuW.Call(menu, MF_STRING, 205, uintptr(unsafe.Pointer(updatePtr)))
-
-			exitPtr, _ := syscall.UTF16PtrFromString("Exit")
-			appendMenuW.Call(menu, MF_STRING, 206, uintptr(unsafe.Pointer(exitPtr)))
-
-			var pt POINT
-			getCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-			trackPopupMenu.Call(menu, 0, uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
-			destroyMenu.Call(menu)
-		}
+	case WM_DESTROY:
+		postQuitMessage.Call(0)
 		return 0
-
 	case WM_COMMAND:
 		cmd := wParam & 0xFFFF
 		switch cmd {
@@ -293,13 +294,21 @@ func (t *Tray) wndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr
 			}
 		case 206:
 			if t.OnExit != nil {
-				go t.OnExit()
+				t.OnExit()
 			}
 		}
 		return 0
-
-	case WM_DESTROY:
-		postQuitMessage.Call(0)
+	case WM_APP + 1:
+		msgID := lParam & 0xFFFF
+		switch msgID {
+		case 0x0204: // WM_RBUTTONUP
+			t.showMenu()
+		case 0x007B: // WM_CONTEXTMENU callback
+			t.showMenu()
+		}
+		return 0
+	case WM_CONTEXTMENU:
+		t.showMenu()
 		return 0
 	}
 
