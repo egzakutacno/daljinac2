@@ -108,21 +108,24 @@ func main() {
 	hideConsole()
 	time.Sleep(2 * time.Second)
 
+	// Check os.Args for -install / -remove BEFORE flag.Parse, because
+	// these are not defined flags and flag.Parse would exit with code 2.
+	for _, a := range os.Args {
+		if a == "-install" {
+			doInstall()
+			syncLog()
+			return
+		}
+		if a == "-remove" {
+			doRemove()
+			syncLog()
+			return
+		}
+	}
+
 	port := flag.Int("port", mcpPort, "MCP server port")
 	noTray := flag.Bool("notray", false, "No system tray")
 	flag.Parse()
-
-	args := flag.Args()
-	if len(args) > 0 && args[0] == "-install" {
-		doInstall()
-		syncLog()
-		return
-	}
-	if len(args) > 0 && args[0] == "-remove" {
-		doRemove()
-		syncLog()
-		return
-	}
 
 	log.Printf("=== daljinac2 v%s process start ===", version)
 	log.Printf("Args: %v", os.Args)
