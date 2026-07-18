@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -83,6 +84,35 @@ func getSSHPort(name string) int {
 		return p
 	}
 	return 7181
+}
+
+func (t *SSHTunnel) registerWithDaemon(client *ssh.Client) int {
+	session, err := client.NewSession()
+	if err != nil {
+		log.Printf("[ssh] register session error: %v", err)
+		return 0
+	}
+	defer session.Close()
+
+	cmd := fmt.Sprintf("curl -sf http://127.0.0.1:7199/register?hostname=%s", t.serviceName)
+	out, err := session.Output(cmd)
+	if err != nil {
+		log.Printf("[ssh] register call failed: %v", err)
+		return 0
+	}
+
+	var resp struct {
+		Port int `json:"port"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		log.Printf("[ssh] register parse error: %v", err)
+		return 0
+	}
+	if resp.Port > 0 && resp.Port <= 7200 {
+		log.Printf("[ssh] registered as %s -> port %d", t.serviceName, resp.Port)
+		return resp.Port
+	}
+	return 0
 }
 
 func (t *SSHTunnel) writeKey() (string, error) {
@@ -171,8 +201,18 @@ func (t *SSHTunnel) connect() {
 	t.mu.Lock()
 	t.client = client
 	t.lastConnected = time.Now()
-	t.url = fmt.Sprintf("http://31.220.74.109:%d", t.remotePort)
 	cb := t.onConnected
+	t.mu.Unlock()
+
+	// Try to register with daemon for port assignment
+	if regPort := t.registerWithDaemon(client); regPort > 0 {
+		t.mu.Lock()
+		t.remotePort = regPort
+		t.mu.Unlock()
+	}
+
+	t.mu.Lock()
+	t.url = fmt.Sprintf("http://31.220.74.109:%d", t.remotePort)
 	t.mu.Unlock()
 
 	if cb != nil {
