@@ -37,11 +37,30 @@ func execute(ctx context.Context, name string, args ...string) Result {
 		}
 	}
 
+	out := strings.TrimSpace(stdout.String())
+	err := strings.TrimSpace(stderr.String())
+
 	return Result{
-		Stdout:   strings.TrimSpace(stdout.String()),
-		Stderr:   strings.TrimSpace(stderr.String()),
+		Stdout:   cleanPSProgress(out),
+		Stderr:   cleanPSProgress(err),
 		ExitCode: exitCode,
 	}
+}
+
+func cleanPSProgress(s string) string {
+	if strings.Contains(s, "#< CLIXML") {
+		lines := strings.Split(s, "\n")
+		var cleaned []string
+		for _, l := range lines {
+			l = strings.TrimSpace(l)
+			if l == "" || strings.HasPrefix(l, "#< CLIXML") || strings.HasPrefix(l, "<Objs") || strings.HasPrefix(l, "<Obj S=") || strings.HasPrefix(l, "</Objs>") || strings.HasPrefix(l, "<TN") || strings.HasPrefix(l, "</TN>") || strings.HasPrefix(l, "<MS>") || strings.HasPrefix(l, "</MS>") || strings.HasPrefix(l, "<I64") || strings.HasPrefix(l, "<PR") || strings.HasPrefix(l, "</PR>") || strings.HasPrefix(l, "<AV>") || strings.HasPrefix(l, "</AV>") || strings.HasPrefix(l, "<Nil") || strings.HasPrefix(l, "<PI") || strings.HasPrefix(l, "<PC") || strings.HasPrefix(l, "<T>") || strings.HasPrefix(l, "</T>") || strings.HasPrefix(l, "<SR") || strings.HasPrefix(l, "<SD") || strings.HasPrefix(l, "<S ") || strings.HasPrefix(l, "<To>") || strings.HasPrefix(l, "</To>") || strings.Contains(l, "RefId=") {
+				continue
+			}
+			cleaned = append(cleaned, l)
+		}
+		return strings.TrimSpace(strings.Join(cleaned, "\n"))
+	}
+	return s
 }
 
 func CMD(command string, timeout time.Duration) Result {

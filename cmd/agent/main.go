@@ -150,7 +150,15 @@ func main() {
 
 	if !*noTray {
 		time.Sleep(3 * time.Second)
-		go tr.Run()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[tray] PANIC: %v", r)
+				}
+			}()
+			log.Println("[main] starting tray goroutine")
+			tr.Run()
+		}()
 	} else {
 		log.Println("Headless mode")
 	}

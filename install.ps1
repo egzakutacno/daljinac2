@@ -5,7 +5,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $Dir = "C:\daljinac2"
 $Exe = "$Dir\daljinac2.exe"
-$URL = "https://github.com/egzakutacno/daljinac2/releases/latest/download/daljinac2.exe"
+$URL = "https://github.com/egzakutacno/daljinac2/releases/download/v2.0.0-dev/daljinac2.exe"
 $ExtraArgs = if ($notray) { "-notray" } else { "" }
 
 Write-Host "[1/3] Downloading..."
