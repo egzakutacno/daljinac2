@@ -26,6 +26,8 @@ var (
 	dispatchMessageW      = user32.NewProc("DispatchMessageW")
 	shellNotifyIconW      = shell32.NewProc("Shell_NotifyIconW")
 	loadIconW             = user32.NewProc("LoadIconW")
+	loadImageW            = user32.NewProc("LoadImageW")
+	createIcon            = user32.NewProc("CreateIcon")
 	loadCursorW           = user32.NewProc("LoadCursorW")
 	createPopupMenu       = user32.NewProc("CreatePopupMenu")
 	appendMenuW           = user32.NewProc("AppendMenuW")
@@ -55,7 +57,12 @@ const (
 	TPM_RIGHTBUTTON = 0x0002
 	TPM_BOTTOMALIGN = 0x0020
 	IDI_APPLICATION = 32512
+	IDI_ERROR       = 32513
+	IDI_WARNING     = 32515
+	IDI_ASTERISK    = 32516
 	IDC_ARROW       = 32512
+	IMAGE_ICON      = 1
+	LR_SHARED       = 0x8000
 )
 
 const (
@@ -116,6 +123,64 @@ type Tray struct {
 	OnUpdate        func()
 }
 
+func makeSolidIcon() uintptr {
+	andSize := 16 * 16 / 8
+	xorSize := 16 * 16 / 8
+	andMask := make([]byte, andSize)
+	xorMask := make([]byte, xorSize)
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			if x >= 2 && x < 14 && y >= 2 && y < 14 {
+				bit := uint(y*16 + x)
+				xorMask[bit/8] |= 1 << (bit % 8)
+			}
+		}
+	}
+	h, _, _ := createIcon.Call(0, 16, 16, 1, 1,
+		uintptr(unsafe.Pointer(&andMask[0])),
+		uintptr(unsafe.Pointer(&xorMask[0])))
+	return h
+}
+
+func iconFromID(id uintptr) uintptr {
+	h, _, _ := loadImageW.Call(0, id, IMAGE_ICON, 16, 16, LR_SHARED)
+	if h == 0 {
+		h, _, _ = loadIconW.Call(0, uintptr(IDI_APPLICATION))
+	}
+	if h == 0 {
+		h = makeSolidIcon()
+	}
+	return h
+}
+
+func (t *Tray) hIcon() uintptr {
+	switch t.statusIcon {
+	case IconConnected:
+		return iconFromID(IDI_ASTERISK)
+	case IconConnecting:
+		return iconFromID(IDI_WARNING)
+	default:
+		return iconFromID(IDI_ERROR)
+	}
+}
+
+func (t *Tray) updateTip() {
+	t.mu.RLock()
+	u := t.url
+	t.mu.RUnlock()
+
+	tipStr := fmt.Sprintf("Daljinac2 v%s — %s", t.version, t.hostname)
+	if u != "" {
+		tipStr = fmt.Sprintf("Daljinac2 ✓ %s — %s", t.hostname, u)
+	}
+	if !t.iconAdded {
+		return
+	}
+	copy(t.nid.SzTip[:], syscall.StringToUTF16(tipStr))
+	t.nid.UFlags = NIF_TIP
+	shellNotifyIconW.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&t.nid)))
+}
+
 func New(hostname, version string) *Tray {
 	return &Tray{hostname: hostname, version: version, stopCh: make(chan struct{})}
 }
@@ -124,18 +189,25 @@ func (t *Tray) SetURL(u string) {
 	t.mu.Lock()
 	t.url = u
 	t.mu.Unlock()
+	t.updateTip()
 }
 
 func (t *Tray) SetRunning() {
 	t.mu.Lock()
 	t.running = true
 	t.mu.Unlock()
+	t.updateTip()
 }
 
 func (t *Tray) SetStatusIcon(icon int) {
 	t.mu.Lock()
 	t.statusIcon = icon
 	t.mu.Unlock()
+	if t.iconAdded {
+		t.nid.HIcon = t.hIcon()
+		t.nid.UFlags = NIF_ICON
+		shellNotifyIconW.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&t.nid)))
+	}
 }
 
 func (t *Tray) Run() {
@@ -179,8 +251,8 @@ func (t *Tray) Run() {
 		UFlags:           NIF_MESSAGE | NIF_ICON | NIF_TIP,
 		UCallbackMessage: WM_APP + 1,
 	}
-	t.nid.CbSize = 568 // NOTIFYICONDATAW_V2_SIZE on x64
-	t.nid.HIcon, _, _ = loadIconW.Call(0, IDI_APPLICATION)
+	t.nid.CbSize = 568
+	t.nid.HIcon = t.hIcon()
 	tipStr := fmt.Sprintf("Daljinac2 v%s — %s", t.version, t.hostname)
 	copy(t.nid.SzTip[:], syscall.StringToUTF16(tipStr))
 

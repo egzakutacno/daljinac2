@@ -23,7 +23,7 @@ import (
 	"github.com/egzakutacno/daljinac2/tray"
 )
 
-const version = "2.0.0-dev.20260718.1"
+const version = "2.0.0-dev.20260718.2"
 const maxLogSize = 1 * 1024 * 1024
 const mcpPort = 1984
 
