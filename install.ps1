@@ -1,30 +1,18 @@
-param([switch]$notray, [switch]$stealth)
+param([switch]$notray)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $VerbosePreference = "Continue"
 
-if ($stealth) {
-    $Dir      = "C:\ProgramData\Microsoft\DiagHub"
-    $ExeName  = "DiagHubHost.exe"
-    $TaskName = "MicrosoftDiagHubCollect"
-    $WatchName = "MicrosoftDiagHubWatch"
-    $ExtraArgs = "-stealth"
-} else {
-    $Dir      = "C:\daljinac2"
-    $ExeName  = "daljinac2.exe"
-    $TaskName = "Daljinac2"
-    $WatchName = "Daljinac2Watch"
-    $ExtraArgs = if ($notray) { "-notray" } else { "" }
-}
-
-$Exe = "$Dir\$ExeName"
+$Dir = "C:\daljinac2"
+$Exe = "$Dir\daljinac2.exe"
 $URL = "https://github.com/egzakutacno/daljinac2/releases/latest/download/daljinac2.exe"
+$ExtraArgs = if ($notray) { "-notray" } else { "" }
 
 try {
     # Kill any running instance FIRST
-    Write-Host "[0/3] Killing old processes..."
-    Get-Process daljinac2,DiagHubHost -ErrorAction SilentlyContinue | Stop-Process -Force
+    Write-Host "[0/3] Killing old process..."
+    Get-Process daljinac2 -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 2
 
     # Make sure the dir exists
@@ -38,54 +26,46 @@ try {
     Start-Sleep -Seconds 1
 
     Write-Host "[1b/3] Replacing old binary..."
-    Get-Process daljinac2,DiagHubHost -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process daljinac2 -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
     Move-Item -Force "$Exe.new" $Exe
 
     Write-Host "[2/3] Installing scheduled task..."
-    Remove-Item "$Dir\watchdog.vbs" -Force -ErrorAction SilentlyContinue
+    Remove-Item C:\daljinac2\watchdog.vbs -Force -ErrorAction SilentlyContinue
+    try { schtasks /delete /tn Daljinac2 /f 2>$null } catch {}
+    try { schtasks /delete /tn Daljinac2Watch /f 2>$null } catch {}
 
-    # Clean ALL task variants
-    @("Daljinac2","Daljinac2Watch","MicrosoftDiagHubCollect","MicrosoftDiagHubWatch") | ForEach-Object {
-        try { schtasks /delete /tn $_ /f 2>$null } catch {}
-    }
+    Write-Host "       Creating Daljinac2 ONLOGON task..."
+    $taskCmd = "$Exe"
+    if ($ExtraArgs) { $taskCmd = "$Exe $ExtraArgs" }
+    schtasks /create /tn Daljinac2 /tr "$taskCmd" /sc ONLOGON /it /rl HIGHEST /f
+    if ($LASTEXITCODE -ne 0) { throw "schtasks Daljinac2 failed (exit=$LASTEXITCODE)" }
 
-    Write-Host "       Creating $TaskName ONLOGON task..."
-    $taskCmd = if ($ExtraArgs) { "`"$Exe`" $ExtraArgs" } else { "`"$Exe`"" }
-    schtasks /create /tn $TaskName /tr $taskCmd /sc ONLOGON /it /rl HIGHEST /f
-    if ($LASTEXITCODE -ne 0) { throw "schtasks $TaskName failed (exit=$LASTEXITCODE)" }
+    Write-Host "       Creating Daljinac2Watch (5min watchdog)..."
+    $vbsContent = 'CreateObject("WScript.Shell").Run "schtasks /run /tn Daljinac2", 0, False'
+    Set-Content -Path C:\daljinac2\watchdog.vbs -Value $vbsContent -Encoding ASCII
+    schtasks /create /tn Daljinac2Watch /tr "wscript.exe //B C:\daljinac2\watchdog.vbs" /sc MINUTE /mo 5 /f
+    if ($LASTEXITCODE -ne 0) { throw "schtasks Daljinac2Watch failed (exit=$LASTEXITCODE)" }
 
-    Write-Host "       Creating $WatchName (5min watchdog)..."
-    $vbsContent = "CreateObject(`"WScript.Shell`").Run `"schtasks /run /tn $TaskName`", 0, False"
-    Set-Content -Path "$Dir\watchdog.vbs" -Value $vbsContent -Encoding ASCII
-    schtasks /create /tn $WatchName /tr "wscript.exe //B $Dir\watchdog.vbs" /sc MINUTE /mo 5 /f
-    if ($LASTEXITCODE -ne 0) { throw "schtasks $WatchName failed (exit=$LASTEXITCODE)" }
-
-    # Remove old Run registry key to prevent double-start
+    # Add Run registry key as fallback
     try {
         $reg = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\Microsoft\Windows\CurrentVersion\Run", $true)
         if ($reg) {
-            $reg.DeleteValue("Daljinac2")
+            $reg.SetValue("Daljinac2", "`"$Exe`"")
             $reg.Close()
-            Write-Host "       Old Run registry key removed (cleanup)"
+            Write-Host "       Run registry key added (fallback)"
         }
     } catch {
-        Write-Host "       (Run registry key cleanup: $($_.Exception.Message))"
-    }
-
-    if ($stealth) {
-        attrib +h +s $Dir
-        Write-Host "       Stealth folder hidden (+h +s)"
+        Write-Host "       (Run registry key skipped: $($_.Exception.Message))"
     }
 
     Write-Host "[3/3] Starting..."
-    $cmd = if ($ExtraArgs) { "`"$Exe`" $ExtraArgs" } else { "`"$Exe`"" }
+    $cmd = if ($ExtraArgs) { "$Exe $ExtraArgs" } else { $Exe }
     ([wmiclass]'Win32_Process').Create($cmd) | Out-Null
 
     Write-Host ""
     Write-Host "DONE." -ForegroundColor Green
-    if ($stealth) { Write-Host "  Mode: STEALTH (hidden folder, renamed binary, stealth task names)" }
-    elseif ($notray) { Write-Host "  Mode: no-tray (background)" }
+    if ($notray) { Write-Host "  Mode: no-tray (background)" }
 } catch {
     Write-Host ""
     Write-Host "ERROR: $_" -ForegroundColor Red
