@@ -126,16 +126,15 @@ func main() {
 			syncLog()
 		}
 	}()
-	writeStartupMarker()
-	initLog()
-	hideConsole()
-	time.Sleep(2 * time.Second)
 
-	// Check os.Args for -install / -remove / -stealth BEFORE flag.Parse
+	// Check -stealth FIRST before any init, so paths resolve correctly
 	for _, a := range os.Args {
 		if a == "-stealth" {
 			isStealth = true
 		}
+	}
+	// Handle -install / -remove (needs isStealth already set)
+	for _, a := range os.Args {
 		if a == "-install" {
 			doInstall()
 			syncLog()
@@ -147,6 +146,11 @@ func main() {
 			return
 		}
 	}
+
+	writeStartupMarker()
+	initLog()
+	hideConsole()
+	time.Sleep(2 * time.Second)
 
 	port := flag.Int("port", mcpPort, "MCP server port")
 	noTray := flag.Bool("notray", false, "No system tray")
