@@ -28,16 +28,23 @@ import (
 const version = "2.0.0-dev.20260718.2"
 const maxLogSize = 1 * 1024 * 1024
 const mcpPort = 1984
+const originalExeName = "daljinac2.exe"
 
 var logFile *os.File
 
+func exeDir() string {
+	exe, _ := os.Executable()
+	return filepath.Dir(exe)
+}
+
+func exeBase() string {
+	return strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+}
+
 func initLog() {
-	logDir := filepath.Join(os.Getenv("ProgramData"), "daljinac2")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		logDir = "C:\\daljinac2"
-		os.MkdirAll(logDir, 0755)
-	}
-	logPath := filepath.Join(logDir, "daljinac2.log")
+	logDir := exeDir()
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, exeBase()+".log")
 	if fi, err := os.Stat(logPath); err == nil && fi.Size() > maxLogSize {
 		os.Rename(logPath, logPath+".old")
 	}
@@ -74,9 +81,9 @@ func hideConsole() {
 }
 
 func writeStartupMarker() {
-	marker := "C:\\daljinac2\\started.txt"
-	os.MkdirAll("C:\\daljinac2", 0755)
-	os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0644)
+	dir := exeDir()
+	os.MkdirAll(dir, 0755)
+	os.WriteFile(filepath.Join(dir, "started.txt"), []byte(time.Now().Format(time.RFC3339)+"\n"), 0644)
 }
 
 func logExec(cmdName string, args ...string) error {
@@ -157,7 +164,7 @@ func main() {
 	})
 	directMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"agent":"daljinac2","version":"%s","status":"running"}`, version)
+		fmt.Fprintf(w, `{"agent":"%s","version":"%s","status":"running"}`, exeBase(), version)
 	})
 
 	// Setup tray
@@ -272,49 +279,52 @@ func doInstall() {
 	}
 	log.Printf("[install] binary: %s", exe)
 
-	os.MkdirAll("C:\\daljinac2", 0755)
+	dir := exeDir()
+	base := exeBase()
+	taskName := base
+	watchName := base + "Watch"
+	os.MkdirAll(dir, 0755)
 
 	// Write watchdog VBS
-	vbs := "CreateObject(\"WScript.Shell\").Run \"schtasks /run /tn Daljinac2\", 0, False\n"
-	if err := os.WriteFile("C:\\daljinac2\\watchdog.vbs", []byte(vbs), 0644); err != nil {
+	vbs := fmt.Sprintf("CreateObject(\"WScript.Shell\").Run \"schtasks /run /tn %s\", 0, False\n", taskName)
+	vbsPath := filepath.Join(dir, "watchdog.vbs")
+	if err := os.WriteFile(vbsPath, []byte(vbs), 0644); err != nil {
 		log.Printf("[install] write watchdog.vbs failed: %v", err)
 	} else {
 		log.Println("[install] watchdog.vbs written")
 	}
 
 	// Remove old tasks first
-	logExec("schtasks", "/delete", "/tn", "Daljinac2", "/f")
-	logExec("schtasks", "/delete", "/tn", "Daljinac2Watch", "/f")
+	logExec("schtasks", "/delete", "/tn", taskName, "/f")
+	logExec("schtasks", "/delete", "/tn", watchName, "/f")
 
 	// Create main task with /it (Interactive) flag so tray works
-	if err := logExec("schtasks", "/create", "/tn", "Daljinac2", "/tr", exe,
+	if err := logExec("schtasks", "/create", "/tn", taskName, "/tr", exe,
 		"/sc", "ONLOGON", "/it", "/rl", "HIGHEST", "/f"); err != nil {
-		log.Printf("[install] FAILED to create Daljinac2 task: %v", err)
+		log.Printf("[install] FAILED to create %s task: %v", taskName, err)
 	} else {
-		log.Println("[install] Daljinac2 task created")
+		log.Printf("[install] %s task created", taskName)
 	}
 
 	// Create watchdog task
-	if err := logExec("schtasks", "/create", "/tn", "Daljinac2Watch",
-		"/tr", "wscript.exe //B C:\\daljinac2\\watchdog.vbs",
+	if err := logExec("schtasks", "/create", "/tn", watchName,
+		"/tr", fmt.Sprintf("wscript.exe //B %s", vbsPath),
 		"/sc", "MINUTE", "/mo", "5", "/f"); err != nil {
-		log.Printf("[install] FAILED to create Daljinac2Watch task: %v", err)
+		log.Printf("[install] FAILED to create %s task: %v", watchName, err)
 	} else {
-		log.Println("[install] Daljinac2Watch task created")
+		log.Printf("[install] %s task created", watchName)
 	}
 
 	// Add Run registry key as fallback
 	if k, err := registry.OpenKey(registry.CURRENT_USER,
 		`Software\Microsoft\Windows\CurrentVersion\Run`,
 		registry.SET_VALUE); err == nil {
-		if err := k.SetStringValue("Daljinac2", `"`+exe+`"`); err != nil {
+		if err := k.SetStringValue(base, `"`+exe+`"`); err != nil {
 			log.Printf("[install] registry Run key set failed: %v", err)
 		} else {
 			log.Println("[install] Run registry key set")
 		}
 		k.Close()
-	} else {
-		log.Printf("[install] cannot open Run registry key: %v", err)
 	}
 
 	syncLog()
@@ -329,33 +339,41 @@ func doInstall() {
 }
 
 func doRemove() {
-	logExec("taskkill", "/f", "/im", "daljinac2.exe")
-	logExec("schtasks", "/delete", "/tn", "Daljinac2", "/f")
-	logExec("schtasks", "/delete", "/tn", "Daljinac2Watch", "/f")
+	exeName := filepath.Base(os.Args[0])
+	base := exeBase()
+	taskName := base
+	watchName := base + "Watch"
+	logExec("taskkill", "/f", "/im", exeName)
+	logExec("schtasks", "/delete", "/tn", taskName, "/f")
+	logExec("schtasks", "/delete", "/tn", watchName, "/f")
 
 	if k, err := registry.OpenKey(registry.CURRENT_USER,
 		`Software\Microsoft\Windows\CurrentVersion\Run`,
 		registry.SET_VALUE); err == nil {
-		k.DeleteValue("Daljinac2")
+		k.DeleteValue(base)
 		k.Close()
 	}
 
-	os.Remove("C:\\daljinac2\\watchdog.vbs")
+	os.Remove(filepath.Join(exeDir(), "watchdog.vbs"))
 	log.Println("[remove] done")
 	syncLog()
 }
 
 func updateURL() string {
-	name := filepath.Base(os.Args[0])
-	return "https://github.com/egzakutacno/daljinac2/releases/latest/download/" + name
+	return "https://github.com/egzakutacno/daljinac2/releases/latest/download/" + originalExeName
 }
 
 func doUpdate() error {
-	tmpDir := filepath.Join(os.TempDir(), "daljinac2-update")
+	base := exeBase()
+	taskName := base
+	watchName := base + "Watch"
+	dir := exeDir()
+
+	tmpDir := filepath.Join(os.TempDir(), base+"-update")
 	os.MkdirAll(tmpDir, 0755)
 
 	dlURL := updateURL()
-	newExe := filepath.Join(tmpDir, filepath.Base(os.Args[0]))
+	newExe := filepath.Join(tmpDir, originalExeName)
 	log.Printf("[update] downloading %s", dlURL)
 	resp, err := http.Get(dlURL)
 	if err != nil {
@@ -376,6 +394,8 @@ func doUpdate() error {
 	os.WriteFile(argsFile, []byte(fullCmd), 0644)
 
 	logFile := filepath.Join(tmpDir, "update.log")
+	vbsPath := filepath.Join(dir, "watchdog.vbs")
+	exeName := filepath.Base(current)
 	bat := filepath.Join(tmpDir, "up.bat")
 	batch := fmt.Sprintf(`@echo off
 set LOG="%s"
@@ -388,28 +408,35 @@ if %%errorlevel%% neq 0 (
     exit /b 1
 )
 echo %%date%% %%time%% [update] copy OK, killing >> %%LOG%%
-taskkill /f /im daljinac2.exe >> %%LOG%% 2>&1
+taskkill /f /im %s >> %%LOG%% 2>&1
 timeout /t 2 /nobreak > nul
 echo %%date%% %%time%% [update] writing vbs >> %%LOG%%
-echo CreateObject("WScript.Shell").Run "schtasks /run /tn Daljinac2", 0, False > C:\daljinac2\watchdog.vbs
+echo CreateObject("WScript.Shell").Run "schtasks /run /tn %s", 0, False > "%s"
 echo %%date%% %%time%% [update] registering tasks >> %%LOG%%
-schtasks /delete /tn Daljinac2 /f >> %%LOG%% 2>&1
-schtasks /create /tn Daljinac2 /tr "%%CMD%%" /sc ONLOGON /rl HIGHEST /f >> %%LOG%% 2>&1
+schtasks /delete /tn "%s" /f >> %%LOG%% 2>&1
+schtasks /create /tn "%s" /tr "%%CMD%%" /sc ONLOGON /rl HIGHEST /f >> %%LOG%% 2>&1
 echo %%date%% %%time%% [update] starting app >> %%LOG%%
-schtasks /run /tn Daljinac2 >> %%LOG%% 2>&1
+schtasks /run /tn "%s" >> %%LOG%% 2>&1
 for /l %%i in (1,1,3) do (
   timeout /t 5 /nobreak > nul
-  tasklist /fi "imagename eq daljinac2.exe" 2>nul | find /i "daljinac2" >nul
+  tasklist /fi "imagename eq %s" 2>nul | find /i "%s" >nul
   if not errorlevel 1 goto RUNNING
   start "" /min %%CMD%% >> %%LOG%% 2>&1
 )
 :RUNNING
-schtasks /delete /tn Daljinac2Watch /f >> %%LOG%% 2>&1
-schtasks /create /tn Daljinac2Watch /tr "wscript.exe //B C:\daljinac2\watchdog.vbs" /sc MINUTE /mo 5 /f >> %%LOG%% 2>&1
+schtasks /delete /tn "%s" /f >> %%LOG%% 2>&1
+schtasks /create /tn "%s" /tr "wscript.exe //B %s" /sc MINUTE /mo 5 /f >> %%LOG%% 2>&1
 echo %%date%% %%time%% [update] done >> %%LOG%%
 del "%s"
 del "%%~f0"
-`, logFile, argsFile, newExe, current, argsFile)
+`, logFile, argsFile, newExe, current,
+		exeName,
+		taskName, vbsPath,
+		taskName, taskName,
+		taskName,
+		exeName, base,
+		watchName, watchName, vbsPath,
+		argsFile)
 	os.WriteFile(bat, []byte(batch), 0644)
 
 	shell32 := syscall.NewLazyDLL("shell32.dll")
