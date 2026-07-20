@@ -25,7 +25,7 @@ import (
 	"github.com/egzakutacno/daljinac2/tray"
 )
 
-const version = "2.0.0-dev.20260719.3"
+const version = "2.0.0-dev.20260719.4"
 const maxLogSize = 1 * 1024 * 1024
 const mcpPort = 1984
 const originalExeName = "daljinac2.exe"
