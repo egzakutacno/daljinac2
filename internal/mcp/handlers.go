@@ -314,7 +314,7 @@ func handleShell(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	timeoutSec := req.GetFloat("timeout", 30)
 	timeout := time.Duration(timeoutSec) * time.Second
 
-	result, _ := shell.RunDetected(command, timeout)
+	result := shell.ShellNative(command, timeout)
 
 	output := fmt.Sprintf("Exit code: %d\n", result.ExitCode)
 	if result.Stdout != "" {

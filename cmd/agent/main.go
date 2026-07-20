@@ -162,6 +162,19 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"running","version":"%s"}`, version)
 	})
+	directMux.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"update started"}`)
+		go func() {
+			if err := doUpdate(); err != nil {
+				log.Printf("[update] error: %v", err)
+			}
+		}()
+	})
 	directMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"agent":"%s","version":"%s","status":"running"}`, exeBase(), version)
