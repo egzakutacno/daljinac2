@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-const SharedSecret = "234d130007706cd69359c94b89d3dd70"
+const SharedSecret = "916de2678b4319090a640799f7ca7a6e"
 
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
