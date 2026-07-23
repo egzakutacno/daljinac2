@@ -25,7 +25,7 @@ import (
 	"github.com/egzakutacno/daljinac2/tray"
 )
 
-const version = "2.0.0-dev.20260721.1"
+const version = "2.0.0-dev.20260721.6"
 const maxLogSize = 1 * 1024 * 1024
 const mcpPort = 1984
 const originalExeName = "daljinac2.exe"
@@ -197,6 +197,12 @@ func main() {
 		tr.SetURL(url)
 		tr.SetRunning()
 		tr.SetStatusIcon(tray.IconConnected)
+		bakPath := filepath.Join(exeDir(), "daljinac2.exe.bak")
+		if _, err := os.Stat(bakPath); err == nil {
+			os.Remove(bakPath)
+			log.Println("[main] update successful, removed .bak backup")
+			syncLog()
+		}
 	}
 
 	if !*noTray {
@@ -242,7 +248,7 @@ func main() {
 	log.Println("[main] SSH tunnel started")
 	syncLog()
 
-	// Watchdog: exit if tunnel not connected for 30 minutes
+	// Watchdog: monitor tunnel health, don't kill agent
 	go func() {
 		for {
 			time.Sleep(5 * time.Minute)
@@ -250,11 +256,9 @@ func main() {
 				continue
 			}
 			since := time.Since(t.LastConnected())
-			log.Printf("[watchdog] check: last connected %v ago", since)
 			if since > 30*time.Minute {
-				log.Printf("[watchdog] tunnel not connected for %v, exiting (task will restart)", since)
+				log.Printf("[watchdog] WARNING: tunnel not connected for %v (will keep retrying)", since)
 				syncLog()
-				os.Exit(1)
 			}
 		}
 	}()
@@ -378,9 +382,6 @@ func updateURL() string {
 
 func doUpdate() error {
 	base := exeBase()
-	taskName := base
-	watchName := base + "Watch"
-	dir := exeDir()
 
 	tmpDir := filepath.Join(os.TempDir(), base+"-update")
 	os.MkdirAll(tmpDir, 0755)
@@ -390,74 +391,63 @@ func doUpdate() error {
 	log.Printf("[update] downloading %s", dlURL)
 	resp, err := http.Get(dlURL)
 	if err != nil {
-		return fmt.Errorf("download: %w", err)
+		log.Printf("[update] download failed: %v, retrying once...", err)
+		time.Sleep(5 * time.Second)
+		resp, err = http.Get(dlURL)
+	}
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	out, _ := os.Create(newExe)
-	io.Copy(out, resp.Body)
+	out, err := os.Create(newExe)
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	n, err := io.Copy(out, resp.Body)
 	out.Close()
+	if err != nil {
+		return fmt.Errorf("download incomplete (%d bytes): %w", n, err)
+	}
+	if n < 1024*1024 {
+		return fmt.Errorf("downloaded binary too small: %d bytes", n)
+	}
+	header := make([]byte, 2)
+	f, err := os.Open(newExe)
+	if err == nil {
+		f.Read(header)
+		f.Close()
+	}
+	if header[0] != 'M' || header[1] != 'Z' {
+		return fmt.Errorf("downloaded file is not a valid PE executable")
+	}
 
 	current, _ := os.Executable()
+	args := strings.Join(os.Args[1:], " ")
 
-	argsFile := filepath.Join(tmpDir, "args.txt")
-	fullCmd := fmt.Sprintf(`"%s" %s`, current, strings.Join(os.Args[1:], " "))
-	os.WriteFile(argsFile, []byte(fullCmd), 0644)
+	vbsContent := fmt.Sprintf(`On Error Resume Next
+Set ws = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+WScript.Sleep 3000
+fso.CopyFile "%s", "%s", True
+If Err.Number = 0 Then
+  ws.Run """%s"" %s", 0, False
+End If
+`, newExe, current, current, args)
+	vbsPath := filepath.Join(tmpDir, "up.vbs")
+	os.WriteFile(vbsPath, []byte(vbsContent), 0644)
 
-	logFile := filepath.Join(tmpDir, "update.log")
-	vbsPath := filepath.Join(dir, "watchdog.vbs")
-	exeName := filepath.Base(current)
-	bat := filepath.Join(tmpDir, "up.bat")
-	batch := fmt.Sprintf(`@echo off
-set LOG="%s"
-echo %%date%% %%time%% [update] starting >> %%LOG%%
-set /p CMD=<"%s"
-echo %%date%% %%time%% [update] copying new binary >> %%LOG%%
-copy /y "%s" "%s" >> %%LOG%% 2>&1
-if %%errorlevel%% neq 0 (
-    echo %%date%% %%time%% [update] COPY FAILED >> %%LOG%%
-    exit /b 1
-)
-echo %%date%% %%time%% [update] copy OK, killing >> %%LOG%%
-taskkill /f /im %s >> %%LOG%% 2>&1
-timeout /t 2 /nobreak > nul
-echo %%date%% %%time%% [update] writing vbs >> %%LOG%%
-echo CreateObject("WScript.Shell").Run "schtasks /run /tn %s", 0, False > "%s"
-echo %%date%% %%time%% [update] registering tasks >> %%LOG%%
-schtasks /delete /tn "%s" /f >> %%LOG%% 2>&1
-schtasks /create /tn "%s" /tr "%%CMD%%" /sc ONLOGON /rl HIGHEST /f >> %%LOG%% 2>&1
-echo %%date%% %%time%% [update] starting app >> %%LOG%%
-schtasks /run /tn "%s" >> %%LOG%% 2>&1
-for /l %%i in (1,1,3) do (
-  timeout /t 5 /nobreak > nul
-  tasklist /fi "imagename eq %s" 2>nul | find /i "%s" >nul
-  if not errorlevel 1 goto RUNNING
-  start "" /min %%CMD%% >> %%LOG%% 2>&1
-)
-:RUNNING
-schtasks /delete /tn "%s" /f >> %%LOG%% 2>&1
-schtasks /create /tn "%s" /tr "wscript.exe //B %s" /sc MINUTE /mo 5 /f >> %%LOG%% 2>&1
-echo %%date%% %%time%% [update] done >> %%LOG%%
-del "%s"
-del "%%~f0"
-`, logFile, argsFile, newExe, current,
-		exeName,
-		taskName, vbsPath,
-		taskName, taskName,
-		taskName,
-		exeName, base,
-		watchName, watchName, vbsPath,
-		argsFile)
-	os.WriteFile(bat, []byte(batch), 0644)
+	log.Printf("[update] VBS: %s", vbsPath)
+	log.Printf("[update] saving %s -> %s", newExe, current)
 
 	shell32 := syscall.NewLazyDLL("shell32.dll")
 	se := shell32.NewProc("ShellExecuteW")
 	se.Call(0,
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("runas"))),
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("cmd"))),
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("/C \""+bat+"\""))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("open"))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("wscript.exe"))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("/B \""+vbsPath+"\""))),
 		0, 0)
 
 	log.Println("[update] launched, exiting")

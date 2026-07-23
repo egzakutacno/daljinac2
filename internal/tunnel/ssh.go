@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -175,6 +176,7 @@ func (t *SSHTunnel) Run() {
 		case <-time.After(delay):
 		}
 		delay = min(delay*2, 30*time.Second)
+		delay += time.Duration(rand.Int63n(int64(delay)+1)) - delay/2
 	}
 }
 
@@ -254,20 +256,7 @@ func (t *SSHTunnel) connect() {
 		return
 	}
 
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-t.stopCh:
-				return
-			case <-ticker.C:
-				t.mu.Lock()
-				t.lastConnected = time.Now()
-				t.mu.Unlock()
-			}
-		}
-	}()
+
 
 	acceptCh := make(chan net.Conn)
 	go func() {

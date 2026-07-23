@@ -26,7 +26,6 @@ func NewStreamableHTTPServer(mcpServer *server.MCPServer, path string) *server.S
 
 func registerTools(s *server.MCPServer) {
 	registerScreenTools(s)
-	registerWebcamTools(s)
 	registerInputTools(s)
 	registerShellTools(s)
 	registerFileTools(s)
