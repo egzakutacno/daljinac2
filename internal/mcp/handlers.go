@@ -19,6 +19,7 @@ import (
 	"github.com/egzakutacno/daljinac2/internal/screen"
 	"github.com/egzakutacno/daljinac2/internal/shell"
 	"github.com/egzakutacno/daljinac2/internal/system"
+	"github.com/egzakutacno/daljinac2/internal/webcam"
 )
 
 var log *zap.SugaredLogger
@@ -65,6 +66,25 @@ func registerScreenTools(s *server.MCPServer) {
 	s.AddTool(mcp.NewTool("num_monitors",
 		mcp.WithDescription("Get the number of active monitors/displays"),
 	), handleNumMonitors)
+}
+
+func registerWebcamTools(s *server.MCPServer) {
+	s.AddTool(mcp.NewTool("webcam_snapshot",
+		mcp.WithDescription("Capture a single JPEG frame from a connected webcam. Use this to see through the remote machine's camera"),
+		mcp.WithNumber("camera",
+			mcp.Description("Camera index (default: 0 = first webcam)"),
+		),
+		mcp.WithNumber("max_width",
+			mcp.Description("Resize to max width while preserving aspect ratio (default: 640, 0 = full resolution)"),
+		),
+		mcp.WithNumber("quality",
+			mcp.Description("JPEG quality 1-100 (default: 75, lower = smaller file / faster to transmit)"),
+		),
+	), handleWebcamSnapshot)
+
+	s.AddTool(mcp.NewTool("webcam_list",
+		mcp.WithDescription("List available webcam devices on the remote machine"),
+	), handleWebcamList)
 }
 
 func registerInputTools(s *server.MCPServer) {
@@ -440,4 +460,26 @@ func handleScreenSize(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		info = append(info, fmt.Sprintf("Monitor %d: %dx%d", i, b.Dx(), b.Dy()))
 	}
 	return mcp.NewToolResultText(strings.Join(info, "\n")), nil
+}
+
+func handleWebcamSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cameraIdx := req.GetFloat("camera", 0)
+	maxWidth := req.GetFloat("max_width", 640)
+	quality := req.GetFloat("quality", 75)
+
+	data, err := webcam.CaptureJPEG(int(cameraIdx), int(maxWidth), int(quality))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("webcam snapshot failed: %v", err)), nil
+	}
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return mcp.NewToolResultText(fmt.Sprintf("data:image/jpeg;base64,%s", b64)), nil
+}
+
+func handleWebcamList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	devices, err := webcam.ListDevices()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("webcam list failed: %v", err)), nil
+	}
+	data, _ := json.MarshalIndent(devices, "", "  ")
+	return mcp.NewToolResultText(string(data)), nil
 }
